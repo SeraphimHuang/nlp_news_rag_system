@@ -6,7 +6,7 @@ import time
 # Import backend logic
 # Ensure current directory is in path to import main.py
 sys.path.append(os.getcwd())
-from main import NewsRAGSystem, generate_answer_with_ollama, list_ollama_models, check_ollama_connection
+from main import NewsRAGSystem, generate_answer_with_ollama, list_ollama_models, check_ollama_connection, load_and_preprocess_data
 
 # Page configuration
 st.set_page_config(
@@ -21,16 +21,34 @@ def load_rag_engine():
     """Initialize and load RAG index"""
     checkpoint_dir = './newsrag_checkpoint'
     
-    if not os.path.exists(checkpoint_dir) or not os.path.exists(os.path.join(checkpoint_dir, 'faiss.index')):
-        return None
+    # 1. Try to load existing index
+    if os.path.exists(checkpoint_dir) and os.path.exists(os.path.join(checkpoint_dir, 'faiss.index')):
+        rag = NewsRAGSystem()
+        try:
+            rag.load(checkpoint_dir)
+            return rag
+        except Exception as e:
+            st.error(f"Failed to load existing index: {e}")
+            # If load fails, we might want to rebuild, but let's just return None for now or continue to build
+            pass
+
+    # 2. If no index or load failed, try to build new one
+    data_path = 'News_Category_Dataset_v3 2.json'
+    if os.path.exists(data_path):
+        with st.spinner('⚠️ Index not found. Building for the first time... (This takes 2-3 mins)'):
+            try:
+                # Use a reasonable sample size for auto-build
+                df = load_and_preprocess_data(data_path, sample_size=50000) 
+                if df is not None:
+                    rag = NewsRAGSystem()
+                    rag.build_index(df)
+                    rag.save(checkpoint_dir)
+                    return rag
+            except Exception as e:
+                st.error(f"Failed to build index: {e}")
+                return None
     
-    rag = NewsRAGSystem()
-    try:
-        rag.load(checkpoint_dir)
-        return rag
-    except Exception as e:
-        st.error(f"Failed to load index: {e}")
-        return None
+    return None
 
 # Initialize system
 rag_system = load_rag_engine()
@@ -41,11 +59,11 @@ with st.sidebar:
     
     # Status Check
     if rag_system is None:
-        st.error("❌ Index file not found")
-        st.info("Please run main.py first to build the index: `python main.py --data ...`")
+        st.error("❌ System Not Ready")
+        st.info("Could not load index or find 'News_Category_Dataset_v3 2.json' to build one. Please ensure the dataset is in the project root.")
         st.stop()
     else:
-        st.success(f"✅ Index loaded ({len(rag_system.documents)} documents)")
+        st.success(f"✅ Index loaded ({len(rag_system.documents)}+ documents)")
 
     # Ollama Connection Check
     # No parameters passed, main.py will handle env var check

@@ -210,11 +210,16 @@ def generate_answer_with_ollama(query: str, retrieved_docs: List[Dict],
     if base_url is None:
         base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     
-    context = "\n".join([f"[{i+1}] {doc['passage']}" 
-                        for i, doc in enumerate(retrieved_docs)])
+    context_list = []
+    for i, doc in enumerate(retrieved_docs):
+        date_str = doc.get('document', {}).get('date', '')
+        date_prefix = f"[{date_str}] " if date_str else ""
+        context_list.append(f"[{i+1}] {date_prefix}{doc['passage']}")
+    
+    context = "\n".join(context_list)
     
     system_prompt = """You are a helpful news analyst. Answer questions based on the provided news context.
-- Be concise (2-3 sentences)
+- Be concise (5-6 sentences)
 - Always cite sources using [1], [2], etc.
 - Only use information from the context
 - If no relevant info, say so"""
