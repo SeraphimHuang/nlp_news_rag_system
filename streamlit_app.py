@@ -15,55 +15,71 @@ st.set_page_config(
     layout="wide"
 )
 
-# 1. Resource Caching: Load RAG System
-@st.cache_resource
-def load_rag_engine():
-    """Initialize and load RAG index"""
-    checkpoint_dir = './newsrag_checkpoint'
-    
-    # 1. Try to load existing index
-    if os.path.exists(checkpoint_dir) and os.path.exists(os.path.join(checkpoint_dir, 'faiss.index')):
-        rag = NewsRAGSystem()
-        try:
-            rag.load(checkpoint_dir)
-            return rag
-        except Exception as e:
-            st.error(f"Failed to load existing index: {e}")
-            # If load fails, we might want to rebuild, but let's just return None for now or continue to build
-            pass
-
-    # 2. If no index or load failed, try to build new one
-    data_path = 'News_Category_Dataset_v3 2.json'
-    if os.path.exists(data_path):
-        with st.spinner('⚠️ Index not found. Building for the first time... (This takes 2-3 mins)'):
-            try:
-                # Use a reasonable sample size for auto-build
-                df = load_and_preprocess_data(data_path, sample_size=50000) 
-                if df is not None:
-                    rag = NewsRAGSystem()
-                    rag.build_index(df)
-                    rag.save(checkpoint_dir)
-                    return rag
-            except Exception as e:
-                st.error(f"Failed to build index: {e}")
-                return None
-    
-    return None
-
-# Initialize system
-rag_system = load_rag_engine()
-
-# 2. Sidebar Configuration
+# 2. Sidebar Configuration (Moved up to control loading)
 with st.sidebar:
     st.header("⚙️ Configuration")
     
+    # Strategy Selection
+    retrieval_strategy = st.radio(
+        "Retrieval Strategy",
+        ["Simple (Single Index)", "Weighted (Dual Index)"],
+        index=0,
+        help="Simple: Standard RAG.\nWeighted: Separates headline/content for better precision."
+    )
+    
+    strategy_code = 'weighted' if 'Weighted' in retrieval_strategy else 'simple'
+
+# 1. Resource Caching: Load RAG System
+@st.cache_resource
+def load_rag_engine(strategy: str):
+    """Initialize and load RAG index based on strategy"""
+    # Define primary and fallback paths
+    primary_path = f'./newsrag_checkpoint_{strategy}'
+    fallback_path = './newsrag_checkpoint'
+    
+    paths_to_try = [primary_path, fallback_path]
+    
+    for checkpoint_dir in paths_to_try:
+        # Check if directory exists
+        if not os.path.exists(checkpoint_dir):
+            continue
+            
+        # Check for metadata
+        meta_path = os.path.join(checkpoint_dir, 'metadata.pkl')
+        if not os.path.exists(meta_path):
+            continue
+            
+        try:
+            # Peek at metadata to check strategy match
+            import pickle
+            with open(meta_path, 'rb') as f:
+                meta = pickle.load(f)
+            
+            loaded_strategy = meta.get('strategy', 'simple')
+            
+            # If strategies match, load it
+            if loaded_strategy == strategy:
+                rag = NewsRAGSystem()
+                rag.load(checkpoint_dir)
+                return rag
+        except Exception as e:
+            print(f"Skipping {checkpoint_dir}: {e}")
+            continue
+
+    return None
+
+# Initialize system with selected strategy
+rag_system = load_rag_engine(strategy_code)
+
+# Sidebar Status Check
+with st.sidebar:
     # Status Check
     if rag_system is None:
-        st.error("❌ System Not Ready")
-        st.info("Could not load index or find 'News_Category_Dataset_v3 2.json' to build one. Please ensure the dataset is in the project root.")
+        st.error(f"❌ Index for '{strategy_code}' not found")
+        st.info(f"Please run: `python main.py --strategy {strategy_code} --save-index ./newsrag_checkpoint_{strategy_code}`")
         st.stop()
     else:
-        st.success(f"✅ Index loaded ({len(rag_system.documents)} documents)")
+        st.success(f"✅ Index loaded ({len(rag_system.documents)} docs)")
 
     # Ollama Connection Check
     # No parameters passed, main.py will handle env var check

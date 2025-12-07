@@ -83,80 +83,131 @@ def load_and_preprocess_data(data_path: str, sample_size: int = 5000) -> pd.Data
 class NewsRAGSystem:
     def __init__(self, model_name: str = 'all-MiniLM-L6-v2', 
                  reranker_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2',
+                 retrieval_strategy: str = 'simple',
                  device: str = 'cpu'):
-        """Initialize RAG system"""
+        """
+        Initialize RAG system
+        retrieval_strategy: 'simple' (single index) or 'weighted' (headline + content indices)
+        """
         print(f"Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name, device=device)
         
         print(f"Loading reranker model: {reranker_name}")
         self.reranker = CrossEncoder(reranker_name, device=device)
         
+        self.strategy = retrieval_strategy
         self.faiss_index = None
+        self.faiss_index_headline = None
+        self.faiss_index_content = None
+        
         self.documents = []
         self.passages = []
         self.urls = []
         
     def build_index(self, df: pd.DataFrame, batch_size: int = 32):
-        """Build FAISS index from passages"""
+        """Build FAISS index(es) based on strategy"""
         print(f"\n{'='*70}")
-        print("STEP 2: BUILD RETRIEVAL INDEX")
+        print(f"STEP 2: BUILD RETRIEVAL INDEX (Strategy: {self.strategy})")
         print('='*70)
-        print(f"Building FAISS index from {len(df)} documents...")
         
         self.passages = df['passage'].tolist()
         self.urls = df['link'].tolist()
         self.documents = df.to_dict('records')
         
-        # Generate embeddings
+        if self.strategy == 'weighted':
+            print("Building separate indices for Headlines and Content...")
+            # 1. Build Headline Index
+            print("  Index 1/2: Headlines")
+            headlines = df['headline'].tolist()
+            self.faiss_index_headline = self._create_faiss_index(headlines, batch_size)
+            
+            # 2. Build Content Index
+            print("  Index 2/2: Short Descriptions")
+            contents = df['short_description'].tolist()
+            self.faiss_index_content = self._create_faiss_index(contents, batch_size)
+            
+        else: # 'simple'
+            print("Building single index for Passages...")
+            self.faiss_index = self._create_faiss_index(self.passages, batch_size)
+            
+        print("✓ Indexing complete\n")
+
+    def _create_faiss_index(self, texts: List[str], batch_size: int):
         embeddings = []
-        for i in range(0, len(self.passages), batch_size):
-            batch = self.passages[i:i+batch_size]
+        total = len(texts)
+        for i in range(0, total, batch_size):
+            batch = texts[i:i+batch_size]
             batch_embeddings = self.model.encode(batch, convert_to_numpy=True)
             embeddings.append(batch_embeddings)
             if (i + batch_size) % (batch_size * 10) == 0:
-                print(f"  Processed {min(i + batch_size, len(self.passages))}/{len(self.passages)}")
+                print(f"    Processed {min(i + batch_size, total)}/{total}")
         
         embeddings = np.vstack(embeddings).astype('float32')
         faiss.normalize_L2(embeddings)
         
-        # Create index
         dimension = embeddings.shape[1]
-        self.faiss_index = faiss.IndexFlatIP(dimension)
-        self.faiss_index.add(embeddings)
-        
-        print(f"✓ FAISS index built with {len(embeddings)} vectors\n")
-        return embeddings
+        index = faiss.IndexFlatIP(dimension)
+        index.add(embeddings)
+        return index
     
-    def retrieve(self, query: str, k: int = 5, initial_k: int = 10) -> List[Dict]:
-        """Retrieve top-k relevant passages with Re-ranking"""
-        # 1. Bi-Encoder Retrieval (Get more candidates)
+    def retrieve(self, query: str, k: int = 5, initial_k: int = 50) -> List[Dict]:
+        """Retrieve top-k relevant passages with Re-ranking (Supports Weighted Strategy)"""
+        # 1. Encode Query
         query_embedding = self.model.encode([query], convert_to_numpy=True).astype('float32')
         faiss.normalize_L2(query_embedding)
         
-        # Ensure we don't ask for more than available
-        search_k = min(initial_k, len(self.documents)) if self.documents else initial_k
-        distances, indices = self.faiss_index.search(query_embedding, search_k)
+        candidates_map = {} # {idx: score}
+
+        if self.strategy == 'weighted':
+            search_k = min(initial_k * 2, len(self.documents)) if self.documents else initial_k
+            
+            # Search Headlines (Weight: 0.4)
+            if self.faiss_index_headline:
+                D_h, I_h = self.faiss_index_headline.search(query_embedding, search_k)
+                for idx, score in zip(I_h[0], D_h[0]):
+                    idx = int(idx)
+                    if idx < 0: continue
+                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.4)
+
+            # Search Content (Weight: 0.6)
+            if self.faiss_index_content:
+                D_c, I_c = self.faiss_index_content.search(query_embedding, search_k)
+                for idx, score in zip(I_c[0], D_c[0]):
+                    idx = int(idx)
+                    if idx < 0: continue
+                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.6)
+                
+        else: # 'simple'
+            search_k = min(initial_k, len(self.documents)) if self.documents else initial_k
+            if self.faiss_index:
+                D, I = self.faiss_index.search(query_embedding, search_k)
+                for idx, score in zip(I[0], D[0]):
+                    idx = int(idx)
+                    if idx < 0: continue
+                    candidates_map[idx] = float(score)
+
+        # 2. Prepare candidates for Re-ranking
+        # Select top-initial_k based on fused score
+        sorted_indices = sorted(candidates_map.items(), key=lambda item: item[1], reverse=True)[:initial_k]
         
-        # 2. Prepare candidates
         candidates = []
         candidate_pairs = [] # For Cross-Encoder
         
-        for idx in indices[0]:
-            idx_int = int(idx)
-            if idx_int < 0: continue # Invalid index
+        for idx, fused_score in sorted_indices:
+            passage = self.passages[idx]
             
-            passage = self.passages[idx_int]
+            # Re-ranker always sees full passage (Headline + Content)
             candidate_pairs.append([query, passage])
             
             # Safely get document
-            if idx_int < len(self.documents):
-                document = self.documents[idx_int]
+            if idx < len(self.documents):
+                document = self.documents[idx]
             else:
-                document = {'passage': passage, 'url': self.urls[idx_int]}
+                document = {'passage': passage, 'url': self.urls[idx]}
                 
             candidates.append({
                 'passage': passage,
-                'url': self.urls[idx_int],
+                'url': self.urls[idx],
                 'document': document
             })
 
@@ -181,33 +232,55 @@ class NewsRAGSystem:
         return candidates
     
     def save(self, save_dir: str = './newsrag_checkpoint'):
-        """Save index"""
+        """Save index(es)"""
         os.makedirs(save_dir, exist_ok=True)
-        faiss.write_index(self.faiss_index, os.path.join(save_dir, 'faiss.index'))
+        
         metadata = {
+            'strategy': self.strategy,
             'passages': self.passages, 
             'urls': self.urls,
             'documents': self.documents if hasattr(self, 'documents') else []
         }
+        
+        if self.strategy == 'weighted':
+            if self.faiss_index_headline:
+                faiss.write_index(self.faiss_index_headline, os.path.join(save_dir, 'faiss_headline.index'))
+            if self.faiss_index_content:
+                faiss.write_index(self.faiss_index_content, os.path.join(save_dir, 'faiss_content.index'))
+        else:
+            if self.faiss_index:
+                faiss.write_index(self.faiss_index, os.path.join(save_dir, 'faiss.index'))
+            
         with open(os.path.join(save_dir, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
-        print(f"✓ System saved to {save_dir}")
+        print(f"✓ System saved to {save_dir} (Strategy: {self.strategy})")
     
     def load(self, save_dir: str = './newsrag_checkpoint'):
-        """Load index"""
-        self.faiss_index = faiss.read_index(os.path.join(save_dir, 'faiss.index'))
+        """Load index(es)"""
         with open(os.path.join(save_dir, 'metadata.pkl'), 'rb') as f:
             metadata = pickle.load(f)
+            
+        self.strategy = metadata.get('strategy', 'simple')
         self.passages = metadata['passages']
         self.urls = metadata['urls']
         self.documents = metadata.get('documents', [])
+        
+        if self.strategy == 'weighted':
+            if os.path.exists(os.path.join(save_dir, 'faiss_headline.index')):
+                self.faiss_index_headline = faiss.read_index(os.path.join(save_dir, 'faiss_headline.index'))
+            if os.path.exists(os.path.join(save_dir, 'faiss_content.index')):
+                self.faiss_index_content = faiss.read_index(os.path.join(save_dir, 'faiss_content.index'))
+        else:
+            if os.path.exists(os.path.join(save_dir, 'faiss.index')):
+                self.faiss_index = faiss.read_index(os.path.join(save_dir, 'faiss.index'))
+            
         # If documents not saved, create minimal documents from passages and urls
         if not self.documents:
             self.documents = [
                 {'passage': passage, 'url': url} 
                 for passage, url in zip(self.passages, self.urls)
             ]
-        print(f"✓ System loaded from {save_dir}")
+        print(f"✓ System loaded from {save_dir} (Strategy: {self.strategy})")
 
 # ============================================================================
 # PART 3: LLM BACKEND - OLLAMA
@@ -255,7 +328,7 @@ def generate_answer_with_ollama(query: str, retrieved_docs: List[Dict],
 - Be concise (2-3 sentences)
 - Always cite sources using [1], [2], etc.
 - If a source does not provide relevant information, don't mention it in the answer.
-- Only use information from the context
+- Only use information from the context and try to include date information if available.
 - If no relevant info, say so"""
     
     prompt = f"""Context from news articles:
@@ -405,6 +478,8 @@ if __name__ == '__main__':
                        help='Load FAISS index from directory')
     parser.add_argument('--k', type=int, default=3,
                        help='Number of documents to retrieve')
+    parser.add_argument('--strategy', type=str, default='simple', choices=['simple', 'weighted'],
+                       help='Retrieval strategy: simple (single index) or weighted (separate indices)')
     
     args = parser.parse_args()
     
@@ -428,7 +503,7 @@ if __name__ == '__main__':
             exit(1)
         
         # Build system
-        rag = NewsRAGSystem()
+        rag = NewsRAGSystem(retrieval_strategy=args.strategy)
         rag.build_index(df)
         
         # Save if requested
