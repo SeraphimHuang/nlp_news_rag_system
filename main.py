@@ -156,21 +156,21 @@ class NewsRAGSystem:
         if strategy == 'weighted':
             search_k = min(initial_k * 2, len(self.documents)) if self.documents else initial_k
             
-            # Search Headlines (Weight: 0.3)
+            # Search Headlines (Weight: 0.7)
             if self.faiss_index_headline:
                 D_h, I_h = self.faiss_index_headline.search(query_embedding, search_k)
                 for idx, score in zip(I_h[0], D_h[0]):
                     idx = int(idx)
                     if idx < 0: continue
-                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.3)
+                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.7)
 
-            # Search Content (Weight: 0.7)
+            # Search Content (Weight: 0.3)
             if self.faiss_index_content:
                 D_c, I_c = self.faiss_index_content.search(query_embedding, search_k)
                 for idx, score in zip(I_c[0], D_c[0]):
                     idx = int(idx)
                     if idx < 0: continue
-                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.7)
+                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.3)
                 
         else: # 'simple'
             search_k = min(initial_k, len(self.documents)) if self.documents else initial_k
