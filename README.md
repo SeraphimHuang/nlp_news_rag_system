@@ -5,7 +5,7 @@ A privacy-focused, local-first RAG (Retrieval-Augmented Generation) system desig
 ## 🚀 Features
 
 *   **Local LLM Inference**: Uses [Ollama](https://ollama.ai/) to run state-of-the-art open models (like Mistral, Llama 2) locally.
-*   **Dual-Strategy Retrieval**: Supports both **Simple** (Single Index) and **Weighted** (Dual Index) retrieval strategies, switchable via UI.
+*   **Dual-Strategy Retrieval**: Seamlessly switch between **Simple** (Single Index) and **Weighted** (Dual Index) strategies in the UI without rebuilding indices.
 *   **Two-Stage Pipeline**: Combines fast Bi-Encoder retrieval with high-precision Cross-Encoder re-ranking.
 *   **Temporal Context Awareness**: Decoupled indexing and generation logic allows the LLM to access timestamped information while maintaining pure semantic search.
 *   **Interactive UI**: Clean Streamlit interface for easy interaction and strategy comparison.
@@ -16,11 +16,12 @@ A privacy-focused, local-first RAG (Retrieval-Augmented Generation) system desig
 The system follows an advanced RAG pipeline with configurable strategies:
 
 1.  **Data Processing**: Loads news dataset, cleans text, and prepares passages.
-2.  **Indexing (Configurable)**:
-    *   **Simple Mode**: Builds a single FAISS index on `headline + description`.
-    *   **Weighted Mode**: Builds **two separate indices** (one for headlines, one for content) to allow fine-grained weighted retrieval (e.g., 30% Headline + 70% Content).
+2.  **Unified Indexing**: Automatically builds **three FAISS indices** in one go:
+    *   `faiss.index`: Combined headline + description (for Simple strategy).
+    *   `faiss_headline.index`: Headlines only (for Weighted strategy).
+    *   `faiss_content.index`: Content only (for Weighted strategy).
 3.  **Retrieval & Re-ranking**: 
-    *   **Step 1 (Recall)**: Retrieves top-50 candidates using Bi-Encoder. In Weighted mode, it fuses scores from both indices.
+    *   **Step 1 (Recall)**: Retrieves top-50 candidates. In Weighted mode, it fuses scores from headline/content indices (0.3/0.7).
     *   **Step 2 (Precision)**: Re-ranks candidates using a Cross-Encoder (`ms-marco-MiniLM-L-6-v2`) to select the top-k highest quality passages.
 4.  **Generation**: Constructs a prompt containing the refined articles (enriched with temporal metadata) and queries the local Ollama instance.
 
@@ -47,19 +48,17 @@ Place your `News_Category_Dataset_v3 2.json` file in the project root directory.
 *(Note: If the file is not present, the system will look for it at runtime. Ensure you have the dataset available.)*
 
 ### 3. Build the Indices (Required)
-To enable the strategy switcher in the UI, you should build indices for both strategies.
+Run the build script **once** to generate all necessary vector indices. This allows you to switch strategies freely in the UI later.
 
 ```bash
 # 1. Build the Docker image
 docker-compose build
 
-# 2. Build 'Simple' Index (Standard RAG)
-docker-compose run --rm -v "$(pwd):/app" rag-app python main.py --strategy simple --save-index ./newsrag_checkpoint --sample-size 50000
-
-# 3. Build 'Weighted' Index (Dual Index Strategy)
-docker-compose run --rm -v "$(pwd):/app" rag-app python main.py --strategy weighted --save-index ./newsrag_checkpoint_weighted --sample-size 50000
+# 2. Run the unified indexing script
+# This generates ALL indices (Simple + Weighted) and saves them to your local machine
+docker-compose run --rm -v "$(pwd):/app" rag-app python main.py --save-index ./newsrag_checkpoint --sample-size 50000
 ```
-*Note: The `-v "$(pwd):/app"` flag persists the generated indices to your local machine.*
+*Note: The process calculates embeddings for passages, headlines, and content separately. It may take a few minutes depending on your sample size.*
 
 ### 4. Start Services
 ```bash
@@ -68,7 +67,7 @@ docker-compose up
 
 This command will:
 1.  Start the **Ollama** container (serving the LLM).
-2.  Start the **NewsRAG** app container (loading the persisted indices).
+2.  Start the **NewsRAG** app container (loading all persisted indices).
 
 ### 5. Initialize Model
 In the UI sidebar or terminal, ensure you have pulled the required model:
@@ -82,7 +81,7 @@ docker exec -it ollama-service ollama pull mistral
 Open your browser and navigate to:
 `http://localhost:8501`
 
-You can now toggle between **Simple** and **Weighted** strategies in the sidebar to compare results.
+You can now toggle between **Simple** and **Weighted** strategies in the sidebar to compare results instantly.
 
 ## 🔧 Design Decisions
 

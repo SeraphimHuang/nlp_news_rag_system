@@ -4,7 +4,6 @@ import sys
 import time
 
 # Import backend logic
-# Ensure current directory is in path to import main.py
 sys.path.append(os.getcwd())
 from main import NewsRAGSystem, generate_answer_with_ollama, list_ollama_models, check_ollama_connection, load_and_preprocess_data
 
@@ -15,11 +14,11 @@ st.set_page_config(
     layout="wide"
 )
 
-# 2. Sidebar Configuration (Moved up to control loading)
+# 2. Sidebar Configuration
 with st.sidebar:
     st.header("⚙️ Configuration")
     
-    # Strategy Selection
+    # Strategy Selection (Just a UI toggle now, backend has all indices)
     retrieval_strategy = st.radio(
         "Retrieval Strategy",
         ["Simple (Single Index)", "Weighted (Dual Index)"],
@@ -31,66 +30,50 @@ with st.sidebar:
 
 # 1. Resource Caching: Load RAG System
 @st.cache_resource
-def load_rag_engine(strategy: str):
-    """Initialize and load RAG index based on strategy"""
-    # Define primary and fallback paths
-    primary_path = f'./newsrag_checkpoint_{strategy}'
-    fallback_path = './newsrag_checkpoint'
+def load_rag_engine():
+    """Initialize and load RAG index (loads ALL indices at once)"""
+    checkpoint_dir = './newsrag_checkpoint'
     
-    paths_to_try = [primary_path, fallback_path]
-    
-    for checkpoint_dir in paths_to_try:
-        # Check if directory exists
-        if not os.path.exists(checkpoint_dir):
-            continue
-            
-        # Check for metadata
-        meta_path = os.path.join(checkpoint_dir, 'metadata.pkl')
-        if not os.path.exists(meta_path):
-            continue
-            
+    # Check if checkpoint exists
+    if os.path.exists(checkpoint_dir) and os.path.exists(os.path.join(checkpoint_dir, 'metadata.pkl')):
         try:
-            # Peek at metadata to check strategy match
-            import pickle
-            with open(meta_path, 'rb') as f:
-                meta = pickle.load(f)
-            
-            loaded_strategy = meta.get('strategy', 'simple')
-            
-            # If strategies match, load it
-            if loaded_strategy == strategy:
-                rag = NewsRAGSystem()
-                rag.load(checkpoint_dir)
-                return rag
+            rag = NewsRAGSystem()
+            rag.load(checkpoint_dir)
+            return rag
         except Exception as e:
-            print(f"Skipping {checkpoint_dir}: {e}")
-            continue
-
+            st.error(f"Failed to load index: {e}")
+            return None
+    
     return None
 
-# Initialize system with selected strategy
-rag_system = load_rag_engine(strategy_code)
+# Initialize system
+rag_system = load_rag_engine()
 
 # Sidebar Status Check
 with st.sidebar:
     # Status Check
     if rag_system is None:
-        st.error(f"❌ Index for '{strategy_code}' not found")
-        st.info(f"Please run: `python main.py --strategy {strategy_code} --save-index ./newsrag_checkpoint_{strategy_code}`")
+        st.error("❌ Index Not Found")
+        st.info("Please run `python main.py --save-index ./newsrag_checkpoint` to build the knowledge base.")
         st.stop()
     else:
-        st.success(f"✅ Index loaded ({len(rag_system.documents)} docs)")
+        # Show which indices are active
+        idx_count = 0
+        if rag_system.faiss_index: idx_count += 1
+        if rag_system.faiss_index_headline: idx_count += 1
+        
+        st.success(f"✅ System Ready ({len(rag_system.documents)} docs)")
+        if strategy_code == 'weighted' and not rag_system.faiss_index_headline:
+            st.warning("⚠️ Weighted index missing! Re-run build.")
 
     # Ollama Connection Check
-    # No parameters passed, main.py will handle env var check
     ollama_status = check_ollama_connection()
     
     if ollama_status:
         st.success("✅ Ollama Service Online")
-        # Get available models
         available_models = list_ollama_models()
         if not available_models:
-            available_models = ['mistral'] # Default fallback
+            available_models = ['mistral'] 
         
         selected_model = st.selectbox(
             "Select Model (Ollama)",
@@ -100,7 +83,7 @@ with st.sidebar:
     else:
         st.error("❌ Ollama Service Not Running")
         st.info("Please run `ollama serve` in terminal")
-        selected_model = "mistral" # Avoid undefined variable
+        selected_model = "mistral"
         
     # Parameter Adjustment
     k_retrieval = st.slider("Number of Articles (K)", min_value=1, max_value=10, value=3)
@@ -132,15 +115,18 @@ if prompt := st.chat_input("Enter your question about news..."):
     # 2. Generate Response
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
         
         if not ollama_status:
-            st.error("Cannot connect to Ollama service. Please check if it is running in the background.")
+            st.error("Cannot connect to Ollama service.")
         else:
-            with st.spinner('Retrieving news and thinking...'):
+            with st.spinner(f'Retrieving news ({strategy_code} strategy) and thinking...'):
                 try:
-                    # Retrieve
-                    retrieved_docs = rag_system.retrieve(prompt, k=k_retrieval)
+                    # Retrieve (Pass the selected strategy here!)
+                    retrieved_docs = rag_system.retrieve(
+                        prompt, 
+                        strategy=strategy_code, # <--- Dynamic strategy
+                        k=k_retrieval
+                    )
                     
                     # Generate
                     result = generate_answer_with_ollama(
@@ -158,7 +144,7 @@ if prompt := st.chat_input("Enter your question about news..."):
                     # Record to History
                     st.session_state["messages"].append({"role": "assistant", "content": answer})
                     
-                    # Display Sources (Using Expander)
+                    # Display Sources
                     if sources:
                         with st.expander("📚 Reference News Sources"):
                             for src in sources:

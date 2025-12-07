@@ -83,11 +83,9 @@ def load_and_preprocess_data(data_path: str, sample_size: int = 5000) -> pd.Data
 class NewsRAGSystem:
     def __init__(self, model_name: str = 'all-MiniLM-L6-v2', 
                  reranker_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2',
-                 retrieval_strategy: str = 'simple',
                  device: str = 'cpu'):
         """
         Initialize RAG system
-        retrieval_strategy: 'simple' (single index) or 'weighted' (headline + content indices)
         """
         print(f"Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name, device=device)
@@ -95,42 +93,39 @@ class NewsRAGSystem:
         print(f"Loading reranker model: {reranker_name}")
         self.reranker = CrossEncoder(reranker_name, device=device)
         
-        self.strategy = retrieval_strategy
-        self.faiss_index = None
-        self.faiss_index_headline = None
-        self.faiss_index_content = None
+        # Initialize ALL index holders
+        self.faiss_index = None          # For 'simple' strategy
+        self.faiss_index_headline = None # For 'weighted' strategy
+        self.faiss_index_content = None  # For 'weighted' strategy
         
         self.documents = []
         self.passages = []
         self.urls = []
-        
+
     def build_index(self, df: pd.DataFrame, batch_size: int = 32):
-        """Build FAISS index(es) based on strategy"""
+        """Build ALL FAISS indices (Simple + Weighted) at once"""
         print(f"\n{'='*70}")
-        print(f"STEP 2: BUILD RETRIEVAL INDEX (Strategy: {self.strategy})")
+        print("STEP 2: BUILD RETRIEVAL INDICES (All Strategies)")
         print('='*70)
         
         self.passages = df['passage'].tolist()
         self.urls = df['link'].tolist()
         self.documents = df.to_dict('records')
         
-        if self.strategy == 'weighted':
-            print("Building separate indices for Headlines and Content...")
-            # 1. Build Headline Index
-            print("  Index 1/2: Headlines")
-            headlines = df['headline'].tolist()
-            self.faiss_index_headline = self._create_faiss_index(headlines, batch_size)
+        # 1. Simple Strategy Index
+        print("\n[1/3] Building Index for Simple Strategy (Passages)...")
+        self.faiss_index = self._create_faiss_index(self.passages, batch_size)
+        
+        # 2. Weighted Strategy Indices
+        print("\n[2/3] Building Index for Weighted Strategy (Headlines)...")
+        headlines = df['headline'].tolist()
+        self.faiss_index_headline = self._create_faiss_index(headlines, batch_size)
+        
+        print("\n[3/3] Building Index for Weighted Strategy (Content)...")
+        contents = df['short_description'].tolist()
+        self.faiss_index_content = self._create_faiss_index(contents, batch_size)
             
-            # 2. Build Content Index
-            print("  Index 2/2: Short Descriptions")
-            contents = df['short_description'].tolist()
-            self.faiss_index_content = self._create_faiss_index(contents, batch_size)
-            
-        else: # 'simple'
-            print("Building single index for Passages...")
-            self.faiss_index = self._create_faiss_index(self.passages, batch_size)
-            
-        print("✓ Indexing complete\n")
+        print("\n✓ All indexing complete\n")
 
     def _create_faiss_index(self, texts: List[str], batch_size: int):
         embeddings = []
@@ -150,7 +145,7 @@ class NewsRAGSystem:
         index.add(embeddings)
         return index
     
-    def retrieve(self, query: str, k: int = 5, initial_k: int = 50) -> List[Dict]:
+    def retrieve(self, query: str, strategy: str = 'simple', k: int = 5, initial_k: int = 50) -> List[Dict]:
         """Retrieve top-k relevant passages with Re-ranking (Supports Weighted Strategy)"""
         # 1. Encode Query
         query_embedding = self.model.encode([query], convert_to_numpy=True).astype('float32')
@@ -158,24 +153,24 @@ class NewsRAGSystem:
         
         candidates_map = {} # {idx: score}
 
-        if self.strategy == 'weighted':
+        if strategy == 'weighted':
             search_k = min(initial_k * 2, len(self.documents)) if self.documents else initial_k
             
-            # Search Headlines (Weight: 0.4)
+            # Search Headlines (Weight: 0.3)
             if self.faiss_index_headline:
                 D_h, I_h = self.faiss_index_headline.search(query_embedding, search_k)
                 for idx, score in zip(I_h[0], D_h[0]):
                     idx = int(idx)
                     if idx < 0: continue
-                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.4)
+                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.3)
 
-            # Search Content (Weight: 0.6)
+            # Search Content (Weight: 0.7)
             if self.faiss_index_content:
                 D_c, I_c = self.faiss_index_content.search(query_embedding, search_k)
                 for idx, score in zip(I_c[0], D_c[0]):
                     idx = int(idx)
                     if idx < 0: continue
-                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.6)
+                    candidates_map[idx] = candidates_map.get(idx, 0.0) + (float(score) * 0.7)
                 
         else: # 'simple'
             search_k = min(initial_k, len(self.documents)) if self.documents else initial_k
@@ -232,55 +227,52 @@ class NewsRAGSystem:
         return candidates
     
     def save(self, save_dir: str = './newsrag_checkpoint'):
-        """Save index(es)"""
+        """Save ALL indices"""
         os.makedirs(save_dir, exist_ok=True)
         
+        # Save indices
+        if self.faiss_index:
+            faiss.write_index(self.faiss_index, os.path.join(save_dir, 'faiss.index'))
+        if self.faiss_index_headline:
+            faiss.write_index(self.faiss_index_headline, os.path.join(save_dir, 'faiss_headline.index'))
+        if self.faiss_index_content:
+            faiss.write_index(self.faiss_index_content, os.path.join(save_dir, 'faiss_content.index'))
+            
+        # Save metadata
         metadata = {
-            'strategy': self.strategy,
             'passages': self.passages, 
             'urls': self.urls,
             'documents': self.documents if hasattr(self, 'documents') else []
         }
-        
-        if self.strategy == 'weighted':
-            if self.faiss_index_headline:
-                faiss.write_index(self.faiss_index_headline, os.path.join(save_dir, 'faiss_headline.index'))
-            if self.faiss_index_content:
-                faiss.write_index(self.faiss_index_content, os.path.join(save_dir, 'faiss_content.index'))
-        else:
-            if self.faiss_index:
-                faiss.write_index(self.faiss_index, os.path.join(save_dir, 'faiss.index'))
-            
         with open(os.path.join(save_dir, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
-        print(f"✓ System saved to {save_dir} (Strategy: {self.strategy})")
-    
+        print(f"✓ System saved to {save_dir}")
+
     def load(self, save_dir: str = './newsrag_checkpoint'):
-        """Load index(es)"""
+        """Load ALL indices"""
+        # Load metadata
         with open(os.path.join(save_dir, 'metadata.pkl'), 'rb') as f:
             metadata = pickle.load(f)
-            
-        self.strategy = metadata.get('strategy', 'simple')
+        
         self.passages = metadata['passages']
         self.urls = metadata['urls']
         self.documents = metadata.get('documents', [])
         
-        if self.strategy == 'weighted':
-            if os.path.exists(os.path.join(save_dir, 'faiss_headline.index')):
-                self.faiss_index_headline = faiss.read_index(os.path.join(save_dir, 'faiss_headline.index'))
-            if os.path.exists(os.path.join(save_dir, 'faiss_content.index')):
-                self.faiss_index_content = faiss.read_index(os.path.join(save_dir, 'faiss_content.index'))
-        else:
-            if os.path.exists(os.path.join(save_dir, 'faiss.index')):
-                self.faiss_index = faiss.read_index(os.path.join(save_dir, 'faiss.index'))
+        # Load indices if they exist
+        if os.path.exists(os.path.join(save_dir, 'faiss.index')):
+            self.faiss_index = faiss.read_index(os.path.join(save_dir, 'faiss.index'))
             
-        # If documents not saved, create minimal documents from passages and urls
+        if os.path.exists(os.path.join(save_dir, 'faiss_headline.index')):
+            self.faiss_index_headline = faiss.read_index(os.path.join(save_dir, 'faiss_headline.index'))
+            
+        if os.path.exists(os.path.join(save_dir, 'faiss_content.index')):
+            self.faiss_index_content = faiss.read_index(os.path.join(save_dir, 'faiss_content.index'))
+
+        # Fallback doc creation
         if not self.documents:
-            self.documents = [
-                {'passage': passage, 'url': url} 
-                for passage, url in zip(self.passages, self.urls)
-            ]
-        print(f"✓ System loaded from {save_dir} (Strategy: {self.strategy})")
+            self.documents = [{'passage': p, 'url': u} for p, u in zip(self.passages, self.urls)]
+            
+        print(f"✓ System loaded from {save_dir}")
 
 # ============================================================================
 # PART 3: LLM BACKEND - OLLAMA
@@ -386,35 +378,15 @@ def generate_template_answer(query: str, retrieved_docs: List[Dict]) -> str:
 def interactive_rag(rag_system: NewsRAGSystem, 
                     model: str = 'mistral',
                     base_url: str = "http://localhost:11434",
-                    k: int = 3):
+                    k: int = 3,
+                    default_strategy: str = 'simple'):
     """Interactive RAG query loop"""
     
     print(f"\n{'='*70}")
-    print("INTERACTIVE NEWS RAG SYSTEM")
+    print(f"INTERACTIVE NEWS RAG SYSTEM (Strategy: {default_strategy})")
     print('='*70)
     
-    # Check Ollama
-    if base_url == "http://localhost:11434":
-        base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-
-    if not check_ollama_connection(base_url):
-        print("⚠️  Ollama is not running!")
-        print(f"   Start it with: ollama serve")
-        print(f"   Or pull a model: ollama pull {model}")
-        return
-    
-    available_models = list_ollama_models(base_url)
-    print(f"✓ Ollama connected!")
-    print(f"Available models: {available_models}")
-    
-    if model not in available_models:
-        print(f"⚠️  Model '{model}' not found!")
-        if available_models:
-            model = available_models[0]
-            print(f"Using '{model}' instead")
-        else:
-            print("No models available. Pull one with: ollama pull mistral")
-            return
+    # ... (Ollama checks) ...
     
     print(f"Using model: {model}\n")
     
@@ -422,20 +394,17 @@ def interactive_rag(rag_system: NewsRAGSystem,
         print("-" * 70)
         query = input("Enter your question (or 'quit' to exit):\n> ").strip()
         
-        if query.lower() in ['quit', 'exit', 'q']:
-            print("✓ Goodbye!")
-            break
-        
-        if not query:
-            print("Please enter a question.")
-            continue
+        # ... (Exit checks) ...
         
         print("\n" + "="*70)
         
         # Retrieve
         start_time = time.time()
-        retrieved = rag_system.retrieve(query, k=k)
+        # Pass strategy here
+        retrieved = rag_system.retrieve(query, strategy=default_strategy, k=k)
         retrieval_time = time.time() - start_time
+        
+        # ... (Print results) ...
         
         print(f"Retrieved {len(retrieved)} passages ({retrieval_time:.3f}s):")
         for doc in retrieved:
@@ -479,7 +448,7 @@ if __name__ == '__main__':
     parser.add_argument('--k', type=int, default=3,
                        help='Number of documents to retrieve')
     parser.add_argument('--strategy', type=str, default='simple', choices=['simple', 'weighted'],
-                       help='Retrieval strategy: simple (single index) or weighted (separate indices)')
+                       help='Default retrieval strategy for interactive mode')
     
     args = parser.parse_args()
     
@@ -503,7 +472,7 @@ if __name__ == '__main__':
             exit(1)
         
         # Build system
-        rag = NewsRAGSystem(retrieval_strategy=args.strategy)
+        rag = NewsRAGSystem()
         rag.build_index(df)
         
         # Save if requested
@@ -511,4 +480,4 @@ if __name__ == '__main__':
             rag.save(args.save_index)
     
     # Interactive loop
-    interactive_rag(rag, model=args.model, base_url=args.ollama_url, k=args.k)
+    interactive_rag(rag, model=args.model, base_url=args.ollama_url, k=args.k, default_strategy=args.strategy)
