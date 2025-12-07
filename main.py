@@ -127,7 +127,7 @@ class NewsRAGSystem:
         print(f"✓ FAISS index built with {len(embeddings)} vectors\n")
         return embeddings
     
-    def retrieve(self, query: str, k: int = 5, initial_k: int = 50) -> List[Dict]:
+    def retrieve(self, query: str, k: int = 5, initial_k: int = 10) -> List[Dict]:
         """Retrieve top-k relevant passages with Re-ranking"""
         # 1. Bi-Encoder Retrieval (Get more candidates)
         query_embedding = self.model.encode([query], convert_to_numpy=True).astype('float32')
