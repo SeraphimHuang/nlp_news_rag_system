@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 try:
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransformer, CrossEncoder
     import faiss
 except ImportError:
     print("Installing required packages...")
@@ -23,7 +23,7 @@ except ImportError:
     import sys
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', 
                           'sentence-transformers', 'faiss-cpu', 'pandas', 'numpy'])
-    from sentence_transformers import SentenceTransformer
+    from sentence_transformers import SentenceTransformer, CrossEncoder
     import faiss
 
 # ============================================================================
@@ -81,10 +81,16 @@ def load_and_preprocess_data(data_path: str, sample_size: int = 5000) -> pd.Data
 # ============================================================================
 
 class NewsRAGSystem:
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', device: str = 'cpu'):
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', 
+                 reranker_name: str = 'cross-encoder/ms-marco-MiniLM-L-6-v2',
+                 device: str = 'cpu'):
         """Initialize RAG system"""
         print(f"Loading embedding model: {model_name}")
         self.model = SentenceTransformer(model_name, device=device)
+        
+        print(f"Loading reranker model: {reranker_name}")
+        self.reranker = CrossEncoder(reranker_name, device=device)
+        
         self.faiss_index = None
         self.documents = []
         self.passages = []
@@ -121,31 +127,58 @@ class NewsRAGSystem:
         print(f"✓ FAISS index built with {len(embeddings)} vectors\n")
         return embeddings
     
-    def retrieve(self, query: str, k: int = 5) -> List[Dict]:
-        """Retrieve top-k relevant passages"""
+    def retrieve(self, query: str, k: int = 5, initial_k: int = 50) -> List[Dict]:
+        """Retrieve top-k relevant passages with Re-ranking"""
+        # 1. Bi-Encoder Retrieval (Get more candidates)
         query_embedding = self.model.encode([query], convert_to_numpy=True).astype('float32')
         faiss.normalize_L2(query_embedding)
         
-        distances, indices = self.faiss_index.search(query_embedding, k)
+        # Ensure we don't ask for more than available
+        search_k = min(initial_k, len(self.documents)) if self.documents else initial_k
+        distances, indices = self.faiss_index.search(query_embedding, search_k)
         
-        results = []
-        for rank, (idx, distance) in enumerate(zip(indices[0], distances[0]), 1):
+        # 2. Prepare candidates
+        candidates = []
+        candidate_pairs = [] # For Cross-Encoder
+        
+        for idx in indices[0]:
             idx_int = int(idx)
-            # Safely get document, create minimal one if not available
+            if idx_int < 0: continue # Invalid index
+            
+            passage = self.passages[idx_int]
+            candidate_pairs.append([query, passage])
+            
+            # Safely get document
             if idx_int < len(self.documents):
                 document = self.documents[idx_int]
             else:
-                document = {'passage': self.passages[idx_int], 'url': self.urls[idx_int]}
-            
-            results.append({
-                'rank': rank,
-                'score': float(distance),
-                'passage': self.passages[idx_int],
+                document = {'passage': passage, 'url': self.urls[idx_int]}
+                
+            candidates.append({
+                'passage': passage,
                 'url': self.urls[idx_int],
                 'document': document
             })
+
+        if not candidates:
+            return []
+
+        # 3. Cross-Encoder Re-ranking
+        # Predict scores for (Query, Document) pairs
+        cross_scores = self.reranker.predict(candidate_pairs)
         
-        return results
+        # Assign scores
+        for i, score in enumerate(cross_scores):
+            candidates[i]['score'] = float(score)
+            
+        # 4. Sort and Top-K
+        candidates = sorted(candidates, key=lambda x: x['score'], reverse=True)[:k]
+        
+        # Add rank
+        for i, res in enumerate(candidates):
+            res['rank'] = i + 1
+            
+        return candidates
     
     def save(self, save_dir: str = './newsrag_checkpoint'):
         """Save index"""

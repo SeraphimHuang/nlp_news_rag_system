@@ -1,22 +1,24 @@
 # NewsRAG: Local Retrieval-Augmented Generation System
 
-A privacy-focused, local-first RAG (Retrieval-Augmented Generation) system designed to answer questions based on news datasets. This project leverages **Ollama** for local LLM inference and **FAISS** for efficient vector retrieval, ensuring that no data leaves your local environment.
+A privacy-focused, local-first RAG (Retrieval-Augmented Generation) system designed to answer questions based on news datasets. This project leverages **Ollama** for local LLM inference, **FAISS** for efficient vector retrieval, and **Cross-Encoders** for high-precision re-ranking.
 
 ## 🚀 Features
 
 *   **Local LLM Inference**: Uses [Ollama](https://ollama.ai/) to run state-of-the-art open models (like Mistral, Llama 2) locally.
-*   **Vector Search**: Implements FAISS for high-performance similarity search over news articles.
+*   **Two-Stage Retrieval**: Combines fast Bi-Encoder retrieval with high-precision Cross-Encoder re-ranking for superior accuracy.
 *   **Temporal Context Awareness**: Decoupled indexing and generation logic allows the LLM to access timestamped information while maintaining pure semantic search.
 *   **Interactive UI**: Provides a clean Streamlit interface for easy interaction.
 *   **Dockerized**: Fully containerized for one-click deployment and reproducibility.
 
 ## 🛠️ System Architecture
 
-The system follows a standard RAG pipeline:
+The system follows an advanced RAG pipeline:
 1.  **Data Processing**: Loads news dataset, cleans text, and prepares passages.
 2.  **Indexing**: Encodes text using `sentence-transformers/all-MiniLM-L6-v2` and builds a Flat-IP FAISS index.
-3.  **Retrieval**: Searches the vector database for the top-k most relevant articles based on semantic similarity.
-4.  **Generation**: Constructs a prompt containing the retrieved articles (enriched with temporal metadata) and queries the local Ollama instance for a concise answer.
+3.  **Retrieval & Re-ranking**: 
+    *   **Step 1 (Recall)**: Retrieves the top-50 most relevant candidates using fast vector search (Bi-Encoder).
+    *   **Step 2 (Precision)**: Re-ranks these 50 candidates using a Cross-Encoder (`ms-marco-MiniLM-L-6-v2`) to select the top-k highest quality passages.
+4.  **Generation**: Constructs a prompt containing the refined articles (enriched with temporal metadata) and queries the local Ollama instance.
 
 ## 📋 Prerequisites
 
@@ -79,18 +81,16 @@ Open your browser and navigate to:
 
 ## 🔧 Design Decisions
 
-### 1. Local-First Approach (Ollama)
+### 1. Retrieve-then-Rerank Architecture
+To balance speed and accuracy, we implement a two-stage retrieval process. The Bi-Encoder (FAISS) acts as a fast filter to reduce millions of documents to a small candidate set (50). The Cross-Encoder then acts as a rigorous judge, scoring each candidate pair-wise against the query. This significantly boosts the relevance of the context provided to the LLM.
+
+### 2. Local-First Approach (Ollama)
 We chose Ollama over cloud APIs (like OpenAI) to ensure complete data privacy and zero cost for inference. This allows the system to run entirely offline once the models are downloaded.
 
-### 2. Decoupling Indexing from Metadata
+### 3. Decoupling Indexing from Metadata
 To improve temporal reasoning, we separated the embedding text from the generation context:
-*   **Index**: Only semantic content (`headline` + `short_description`) is embedded. This prevents dates from skewing semantic similarity.
-*   **Prompt**: The `date` field is dynamically injected into the LLM prompt during generation (e.g., `[2022-09-23] ...`). This allows the model to answer questions like "What happened *after* September?" accurately.
-
-### 3. Containerization Strategy
-We use a multi-container setup:
-*   `ollama`: Dedicated to model serving, allowing it to leverage GPU resources independently.
-*   `rag-app`: Contains the application logic, ensuring the frontend/backend code is isolated from the inference engine.
+*   **Index**: Only semantic content (`headline` + `short_description`) is embedded.
+*   **Prompt**: The `date` field is dynamically injected into the LLM prompt during generation (e.g., `[2022-09-23] ...`).
 
 ## 📂 Project Structure
 
@@ -106,5 +106,4 @@ We use a multi-container setup:
 
 ## 🧪 Evaluation & Methodology
 
-The system's effectiveness relies on the `all-MiniLM-L6-v2` model for high-quality dense retrieval and the `mistral` (or similar) model for reasoning. The "brute-force" Flat-IP index in FAISS ensures 100% recall for retrieval, suitable for datasets up to millions of documents.
-
+The system uses `all-MiniLM-L6-v2` for dense retrieval and `cross-encoder/ms-marco-MiniLM-L-6-v2` for re-ranking. This combination allows for "brute-force" 100% recall in the first stage, followed by high-precision filtering, ensuring the LLM receives the most pertinent information.
