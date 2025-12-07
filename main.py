@@ -219,8 +219,9 @@ def generate_answer_with_ollama(query: str, retrieved_docs: List[Dict],
     context = "\n".join(context_list)
     
     system_prompt = """You are a helpful news analyst. Answer questions based on the provided news context.
-- Be concise (5-6 sentences)
+- Be concise (2-3 sentences)
 - Always cite sources using [1], [2], etc.
+- If a source does not provide relevant information, don't mention it in the answer.
 - Only use information from the context
 - If no relevant info, say so"""
     
@@ -256,7 +257,9 @@ Answer:"""
     return {
         'query': query,
         'answer': answer,
-        'sources': [{'rank': i+1, 'url': doc['url'], 'passage': doc['passage'][:150]} 
+        'sources': [{'rank': i+1, 'url': doc['url'], 
+                     'date': doc.get('document', {}).get('date', 'N/A'),
+                     'passage': doc['passage'][:150]} 
                    for i, doc in enumerate(retrieved_docs)]
     }
 

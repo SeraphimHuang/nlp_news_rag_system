@@ -63,7 +63,7 @@ with st.sidebar:
         st.info("Could not load index or find 'News_Category_Dataset_v3 2.json' to build one. Please ensure the dataset is in the project root.")
         st.stop()
     else:
-        st.success(f"✅ Index loaded ({len(rag_system.documents)}+ documents)")
+        st.success(f"✅ Index loaded ({len(rag_system.documents)} documents)")
 
     # Ollama Connection Check
     # No parameters passed, main.py will handle env var check
@@ -146,7 +146,8 @@ if prompt := st.chat_input("Enter your question about news..."):
                     if sources:
                         with st.expander("📚 Reference News Sources"):
                             for src in sources:
-                                st.markdown(f"**[{src['rank']}] Relevance: N/A**") 
+                                date_str = f" - {src.get('date', 'N/A')}" if src.get('date') else ""
+                                st.markdown(f"**[{src['rank']}] Source{date_str}**") 
                                 st.markdown(f"_{src['passage']}..._")
                                 if src.get('url'):
                                     st.markdown(f"🔗 [Read Original]({src['url']})")
