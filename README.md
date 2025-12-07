@@ -35,29 +35,35 @@ cd nlp_news_rag_system
 
 ### 2. Download Data
 Place your `News_Category_Dataset_v3 2.json` file in the project root directory.
-Data source: https://www.kaggle.com/datasets/rmisra/news-category-dataset
-Misra, Rishabh. "News Category Dataset." arXiv preprint arXiv:2209.11429 (2022)
+*   Data source: https://www.kaggle.com/datasets/rmisra/news-category-dataset
+*   Reference: Misra, Rishabh. "News Category Dataset." arXiv preprint arXiv:2209.11429 (2022)
+
 *(Note: If the file is not present, the system will look for it at runtime. Ensure you have the dataset available.)*
 
 ### 3. Build the Index (Required)
-Before running the application, you must process the dataset and build the vector index. This prevents the UI from hanging during startup.
+Before running the application, you must process the dataset and build the vector index. **Crucial:** We mount the current directory to persist the index file to your local machine so it survives container restarts.
 
 ```bash
-# Using Docker (Recommended)
-docker-compose run --rm rag-app python main.py --data "News_Category_Dataset_v3 2.json" --sample-size 50000 --save-index ./newsrag_checkpoint
+# 1. Build the Docker image
+docker-compose build
 
-# Or running locally
-python main.py --data "News_Category_Dataset_v3 2.json" --sample-size 50000 --save-index ./newsrag_checkpoint
+# 2. Run the indexing script
+# The -v "$(pwd):/app" flag ensures the generated index is saved to your host machine
+docker-compose run --rm -v "$(pwd):/app" rag-app python main.py --data "News_Category_Dataset_v3 2.json" --sample-size 50000 --save-index ./newsrag_checkpoint
 ```
 
+*Note: You can adjust `--sample-size` as needed (e.g., 100000). The process may take a few minutes.*
+
 ### 4. Start Services
+Once the index is built (you should see a `newsrag_checkpoint` folder appear), start the full system:
+
 ```bash
 docker-compose up
 ```
 
 This command will:
 1.  Start the **Ollama** container (serving the LLM).
-2.  Start the **NewsRAG** app container (loading the index you just built).
+2.  Start the **NewsRAG** app container (loading the persisted index).
 
 ### 5. Initialize Model
 In the UI sidebar or terminal, ensure you have pulled the required model:
@@ -65,7 +71,7 @@ In the UI sidebar or terminal, ensure you have pulled the required model:
 # Inside the ollama container or via local CLI if installed
 docker exec -it ollama-service ollama pull mistral
 ```
-*(The UI will guide you if the model is missing)*
+*(The UI will also guide you if the model is missing)*
 
 ### 6. Access the UI
 Open your browser and navigate to:
