@@ -27,6 +27,13 @@ with st.sidebar:
     )
     
     strategy_code = 'weighted' if 'Weighted' in retrieval_strategy else 'simple'
+    
+    # Re-ranking Toggle
+    use_reranker = st.checkbox(
+        "Enable Cross-Encoder Re-ranking",
+        value=True,
+        help="Re-ranks top candidates for higher precision. Uncheck to rely solely on vector similarity."
+    )
 
 # 1. Resource Caching: Load RAG System
 @st.cache_resource
@@ -124,7 +131,8 @@ if prompt := st.chat_input("Enter your question about news..."):
                     # Retrieve (Pass the selected strategy here!)
                     retrieved_docs = rag_system.retrieve(
                         prompt, 
-                        strategy=strategy_code, # <--- Dynamic strategy
+                        strategy=strategy_code, 
+                        use_reranker=use_reranker,
                         k=k_retrieval
                     )
                     

@@ -52,17 +52,17 @@ Run the build script **once** to generate all necessary vector indices. This all
 
 ```bash
 # 1. Build the Docker image
-docker-compose build
+docker compose build
 
 # 2. Run the unified indexing script
 # This generates ALL indices (Simple + Weighted) and saves them to your local machine
-docker-compose run --rm -v "$(pwd):/app" rag-app python main.py --save-index ./newsrag_checkpoint --sample-size 50000
+docker compose run --rm -v "$(pwd):/app" rag-app python main.py --data "News_Category_Dataset_v3 2.json" --save-index ./newsrag_checkpoint --sample-size 100000
 ```
 *Note: The process calculates embeddings for passages, headlines, and content separately. It may take a few minutes depending on your sample size.*
 
 ### 4. Start Services
 ```bash
-docker-compose up
+docker compose up -d
 ```
 
 This command will:

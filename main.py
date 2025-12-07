@@ -145,8 +145,8 @@ class NewsRAGSystem:
         index.add(embeddings)
         return index
     
-    def retrieve(self, query: str, strategy: str = 'simple', k: int = 5, initial_k: int = 50) -> List[Dict]:
-        """Retrieve top-k relevant passages with Re-ranking (Supports Weighted Strategy)"""
+    def retrieve(self, query: str, strategy: str = 'simple', use_reranker: bool = True, k: int = 5, initial_k: int = 50) -> List[Dict]:
+        """Retrieve top-k relevant passages with optional Re-ranking"""
         # 1. Encode Query
         query_embedding = self.model.encode([query], convert_to_numpy=True).astype('float32')
         faiss.normalize_L2(query_embedding)
@@ -181,7 +181,7 @@ class NewsRAGSystem:
                     if idx < 0: continue
                     candidates_map[idx] = float(score)
 
-        # 2. Prepare candidates for Re-ranking
+        # 2. Prepare candidates
         # Select top-initial_k based on fused score
         sorted_indices = sorted(candidates_map.items(), key=lambda item: item[1], reverse=True)[:initial_k]
         
@@ -191,8 +191,9 @@ class NewsRAGSystem:
         for idx, fused_score in sorted_indices:
             passage = self.passages[idx]
             
-            # Re-ranker always sees full passage (Headline + Content)
-            candidate_pairs.append([query, passage])
+            if use_reranker:
+                # Only prepare pairs if we are going to use them
+                candidate_pairs.append([query, passage])
             
             # Safely get document
             if idx < len(self.documents):
@@ -203,19 +204,21 @@ class NewsRAGSystem:
             candidates.append({
                 'passage': passage,
                 'url': self.urls[idx],
-                'document': document
+                'document': document,
+                'score': fused_score # Default to Bi-Encoder score
             })
 
         if not candidates:
             return []
 
-        # 3. Cross-Encoder Re-ranking
-        # Predict scores for (Query, Document) pairs
-        cross_scores = self.reranker.predict(candidate_pairs)
-        
-        # Assign scores
-        for i, score in enumerate(cross_scores):
-            candidates[i]['score'] = float(score)
+        # 3. Cross-Encoder Re-ranking (Optional)
+        if use_reranker:
+            # Predict scores for (Query, Document) pairs
+            cross_scores = self.reranker.predict(candidate_pairs)
+            
+            # Overwrite scores with Cross-Encoder scores
+            for i, score in enumerate(cross_scores):
+                candidates[i]['score'] = float(score)
             
         # 4. Sort and Top-K
         candidates = sorted(candidates, key=lambda x: x['score'], reverse=True)[:k]
