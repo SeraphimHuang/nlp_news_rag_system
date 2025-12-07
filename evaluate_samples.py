@@ -132,7 +132,11 @@ class RAGEvaluator:
                 
                 # 5. Generate Answer (Top-3 context)
                 top_3_docs = retrieved[:3]
+                
+                gen_start_time = time.time()
                 gen_out = generate_answer_with_ollama(question, top_3_docs, model=MODEL_NAME)
+                gen_latency = (time.time() - gen_start_time) * 1000 # ms
+                
                 answer_text = gen_out['answer']
                 
                 # 6. Judge Faithfulness
@@ -148,7 +152,9 @@ class RAGEvaluator:
                     'Rank': rank if rank != float('inf') else -1,
                     'Recall@3': hit_at_3,
                     'MRR': mrr,
-                    'Latency_ms': latency,
+                    'Ret_Latency_ms': latency,
+                    'Gen_Latency_ms': gen_latency,
+                    'Total_Latency_ms': latency + gen_latency,
                     'Faithfulness': faithfulness,
                     'Answer': answer_text,
                     'Context_Found': rank <= 10
@@ -161,7 +167,9 @@ class RAGEvaluator:
         print("\n" + "="*50)
         print("EVALUATION REPORT")
         print("="*50)
-        print(df_res.groupby('Config')[['Recall@3', 'MRR', 'Latency_ms', 'Faithfulness']].mean())
+        # Group by Config and calculate means for key metrics
+        metrics = ['Recall@3', 'MRR', 'Ret_Latency_ms', 'Gen_Latency_ms', 'Total_Latency_ms', 'Faithfulness']
+        print(df_res.groupby('Config')[metrics].mean())
         print("\nDetailed results saved to evaluation_results.csv")
 
 if __name__ == "__main__":
