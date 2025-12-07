@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama-service
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama_data:/root/.ollama
+    restart: always
+
+  rag-app:
+    build: .
+    container_name: newsrag-app
+    ports:
+      - "8501:8501"
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+    volumes:
+      - ./newsrag_checkpoint:/app/newsrag_checkpoint
+    depends_on:
+      - ollama
+    restart: always
+

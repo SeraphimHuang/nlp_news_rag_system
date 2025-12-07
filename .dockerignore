@@ -1,0 +1,18 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.DS_Store
+.git
+.gitignore
+# Data files - prevent large files from being built into the image
+News_Category_Dataset_v3 2.json
+test_data.json
+# Checkpoints - we will mount these as volumes instead
+newsrag_checkpoint/
+ollama_data/
+

@@ -180,16 +180,20 @@ class NewsRAGSystem:
 # PART 3: LLM BACKEND - OLLAMA
 # ============================================================================
 
-def check_ollama_connection(base_url: str = "http://localhost:11434") -> bool:
+def check_ollama_connection(base_url: str = None) -> bool:
     """Check if Ollama is running"""
+    if base_url is None:
+        base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     try:
         response = requests.get(f"{base_url}/api/tags", timeout=2)
         return response.status_code == 200
     except:
         return False
 
-def list_ollama_models(base_url: str = "http://localhost:11434") -> List[str]:
+def list_ollama_models(base_url: str = None) -> List[str]:
     """List available Ollama models"""
+    if base_url is None:
+        base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     try:
         response = requests.get(f"{base_url}/api/tags", timeout=5)
         if response.status_code == 200:
@@ -201,8 +205,10 @@ def list_ollama_models(base_url: str = "http://localhost:11434") -> List[str]:
 
 def generate_answer_with_ollama(query: str, retrieved_docs: List[Dict], 
                                 model: str = 'mistral',
-                                base_url: str = "http://localhost:11434") -> Dict:
+                                base_url: str = None) -> Dict:
     """Generate answer using Ollama"""
+    if base_url is None:
+        base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
     
     context = "\n".join([f"[{i+1}] {doc['passage']}" 
                         for i, doc in enumerate(retrieved_docs)])
@@ -274,6 +280,9 @@ def interactive_rag(rag_system: NewsRAGSystem,
     print('='*70)
     
     # Check Ollama
+    if base_url == "http://localhost:11434":
+        base_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+
     if not check_ollama_connection(base_url):
         print("⚠️  Ollama is not running!")
         print(f"   Start it with: ollama serve")
@@ -347,7 +356,7 @@ if __name__ == '__main__':
                        help='Number of documents to use')
     parser.add_argument('--model', type=str, default='mistral',
                        help='Ollama model to use')
-    parser.add_argument('--ollama-url', type=str, default='http://localhost:11434',
+    parser.add_argument('--ollama-url', type=str, default=os.getenv("OLLAMA_URL", "http://localhost:11434"),
                        help='Ollama server URL')
     parser.add_argument('--save-index', type=str, default=None,
                        help='Save FAISS index to directory')
