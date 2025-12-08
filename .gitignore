@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+*.env
+
+# System
+.DS_Store
+
+# Project specific
+newsrag_checkpoint/
+eda_results/
+ollama_data/
+
+# Evaluation Scripts & Results (Do not upload)
+evaluate_samples.py
+test_famous_questions.py
+evaluation_results.csv
+*.csv
+
